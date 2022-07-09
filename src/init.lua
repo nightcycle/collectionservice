@@ -6,22 +6,40 @@ local Signal: Signal = require(packages:WaitForChild("signal"))
 local Maid: Maid = require(packages:WaitForChild("maid"))
 
 local ReplicateEvent: RemoteEvent = script:WaitForChild("ReplicateEvent")
+local Tags: Folder = script:WaitForChild("Tags")
 
 local Service: CollectionService = {}
 Service.__index = Service
 
 local currentSelf: CollectionService = {}
 
+
+function registerTag(self, tag: Tag)
+	if self.Tags[tag] ~= nil then return end
+	self.Tags[tag] = tagToKey(tag)
+	self.TagKeys[currentSelf.Tags[tag]] = tag
+end
+
+function deregisterTag(self, tag: Tag)
+	if self.Tags[tag] == nil then return end
+	self.TagKeys[currentSelf.Tags[tag]] = nil
+	self.Tags[tag] = nil
+end
+
+
 function toCollectible(self, val: Destructible | Instance)
 	if val == nil then return end
 	if typeof(val) == "table" then
+		-- print("A", val)
 		if val.Destroying and val.Destroy then
+			-- print("B", val)
 			if self.RegisteredTables[val] then return self.RegisteredTables[val] end
-
-			local inst = Instance.new("Folder")
+			-- print("C", val)
+			local inst = Instance.new("Folder", Tags)
 
 			local connection: RBXScriptConnection
 			connection = val.Destroying:Connect(function()
+				-- print("DESTROYING COLLECTIBLE FOLDER")
 				inst:Destroy()
 				connection:Disconnect()
 				self.RegisteredTables[val] = nil
@@ -37,14 +55,10 @@ function toCollectible(self, val: Destructible | Instance)
 		else
 			error("Bad destructible")
 		end
-	elseif typeof(val) == "userdata" then
-		if val:IsA("Instance") then
-			return val
-		else
-			error("Bad instance")
-		end
+	elseif typeof(val) == "Instance" then
+		return val
 	else
-		error("Bad collectible")
+		error("Bad collectible: "..tostring(typeof(val)))
 	end
 end
 
@@ -64,7 +78,7 @@ function comboCollection(self, tags, getSignalFunction)
 
 	local keys = {}
 	for i, tag: Tag in ipairs(tags) do
-		self:RegisterTag(tag)
+		registerTag(self, tag)
 		table.insert(keys, self.Tags[tag])
 	end
 
@@ -77,15 +91,16 @@ function comboCollection(self, tags, getSignalFunction)
 
 	for i, key: string in ipairs(keys) do
 		local subSignal = getSignalFunction(key)
-		maid:GiveTask(subSignal:Connect(function(inst: Instance)
+		maid:GiveTask(subSignal:Connect(function(collectible: Instance)
 			local hasAll = true
+			local inst = fromCollectible(self, collectible)
 			for j, k in ipairs(keys) do
-				if CollectionService:HasTag(inst, k) then
+				if not CollectionService:HasTag(collectible, k) then
 					hasAll = false
 				end
 			end
-			if hasAll then
-				signal:Fire(fromCollectible(self, inst))
+			if hasAll and inst ~= nil then
+				signal:Fire(inst)
 			end
 		end))
 	end
@@ -116,7 +131,7 @@ function Service:GetTagged(...: Tag)
 	local tags: {[number]: Tag} = {...}
 	local keys: {[number]: string} = {}
 	for i, tag:Tag in ipairs(tags) do
-		self:RegisterTag(tag)
+		registerTag(self, tag)
 		keys[i] = self.Tags[tag]
 	end
 	for i, key in ipairs(keys) do
@@ -127,7 +142,12 @@ function Service:GetTagged(...: Tag)
 		local bGroup = tagGroups[b]
 		return #aGroup < #bGroup
 	end)
+	-- print("GROUPS", tagGroups)
+	-- print("KEYS", keys)
 	local registered = {}
+	for i, part in ipairs(tagGroups[keys[1] or ""] or {}) do
+		registered[part] = true
+	end
 	local function findOverlap(index)
 		index = index or 1
 		if index > #keys then return end
@@ -149,15 +169,19 @@ function Service:GetTagged(...: Tag)
 		findOverlap(index + 1)
 	end
 	findOverlap()
+	-- print("Registered", registered)
+	-- print("Groups", tagGroups)
 	local list = {}
 	for k, _ in pairs(registered) do
+		-- print("K", k)
 		table.insert(list, fromCollectible(self, k))
 	end
+	-- print("LIST", list)
 	return list
 end
 
-function Service:GetTags(inst: Collectible): {[number]: Tag}
-	local keys = CollectionService:GetTags(toCollectible(inst))
+function Service:GetTags(inst: Instance | Destructible): {[number]: Tag}
+	local keys = CollectionService:GetTags(toCollectible(self, inst))
 	local tags = {}
 	for i, key in ipairs(keys) do
 		tags[i] = self.TagKeys[key]
@@ -169,12 +193,12 @@ function tagToKey(tag: Tag)
 	return tostring(tag)
 end
 
-function Service:AddTag(inst: Collectible, ...:Tag)
+function Service:AddTag(inst: Instance | Destructible, ...:Tag)
 	local function addSpecificTag(tag: Tag)
-		self:RegisterTag(tag)
+		registerTag(self, tag)
 		local key = self.Tags[tag]
-	
-		CollectionService:AddTag(toCollectible(self, inst), key)
+		local collectible = toCollectible(self, inst)
+		CollectionService:AddTag(collectible, key)
 	end
 
 	for i, tag in ipairs({...}) do
@@ -182,9 +206,9 @@ function Service:AddTag(inst: Collectible, ...:Tag)
 	end
 end
 
-function Service:HasTag(inst: Collectible, ...:Tag)
+function Service:HasTag(inst: Instance | Destructible, ...:Tag)
 	local function hasSpecificTag(tag: Tag)
-		self:RegisterTag(tag)
+		registerTag(self, tag)
 		local key = self.Tags[tag]
 
 		return CollectionService:HasTag(toCollectible(self, inst), key)
@@ -198,9 +222,9 @@ function Service:HasTag(inst: Collectible, ...:Tag)
 	return hasTag
 end
 
-function Service:RemoveTag(inst: Collectible, ...:Tag)
+function Service:RemoveTag(inst: Instance | Destructible, ...:Tag)
 	local function removeTag(tag: Tag)
-		self:RegisterTag(tag)
+		registerTag(self, tag)
 		local key = self.Tags[tag]
 		local c = toCollectible(self, inst)
 		CollectionService:RemoveTag(c, key)
@@ -208,7 +232,7 @@ function Service:RemoveTag(inst: Collectible, ...:Tag)
 			removeCollectible(self, inst)
 		end
 		if #CollectionService:GetTagged(key) == 0 then
-			Service:DeregisterTag(tag)
+			deregisterTag(self, tag)
 		end
 	end
 	for i, tag in ipairs({...}) do
@@ -216,23 +240,11 @@ function Service:RemoveTag(inst: Collectible, ...:Tag)
 	end
 end
 
-function Service:RegisterTag(tag: Tag)
-	if self.Tags[tag] ~= nil then return end
-	self.Tags[tag] = tagToKey(tag)
-	self.TagKeys[currentSelf.Tags[tag]] = tag
-end
-
-function Service:DeregisterTag(tag: Tag)
-	if self.Tags[tag] == nil then return end
-	self.TagKeys[currentSelf.Tags[tag]] = nil
-	self.Tags[tag] = nil
-end
-
 function Service.new()
 	if currentSelf._Maid then
 		currentSelf._Maid:Destroy()
 	end
-	for k, v in pairs(currentSelf.RegisteredTables) do
+	for k, v in pairs(currentSelf.RegisteredTables or {}) do
 		currentSelf.RegisteredTables[k] = nil
 	end
 	for k, v in pairs(currentSelf) do
@@ -243,13 +255,12 @@ function Service.new()
 	currentSelf.Tags = {}
 	currentSelf.TagKeys = {}
 	setmetatable(currentSelf, Service)
+	return currentSelf
 end
 
 function Service:Destroy()
 	Service.new()
 end
-
-Service.new()
 
 export type Destructible = {
 	Destroy: (self: Destructible) -> nil,
@@ -285,4 +296,5 @@ export type Signal = {
 }
 
 
-return currentSelf
+return Service.new()
+
